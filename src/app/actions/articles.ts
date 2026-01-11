@@ -2,13 +2,13 @@
 
 import { eq } from "drizzle-orm";
 import { redirect } from "next/navigation";
+import summarizeArticle from "@/ai/summarize";
+import redis from "@/cache";
 import { authorizeUserToEditArticle } from "@/db/authz";
 import db from "@/db/index";
 import { articles } from "@/db/schema";
+import { ensureUserExists } from "@/db/sync-user";
 import { stackServerApp } from "@/stack/server";
-
-// Server actions for articles (stubs)
-// TODO: Replace with real database operations when ready
 
 export type CreateArticleInput = {
   title: string;
@@ -29,15 +29,35 @@ export async function createArticle(data: CreateArticleInput) {
     throw new Error("❌ Unauthorized");
   }
 
-  await db.insert(articles).values({
-    title: data.title,
-    content: data.content,
-    slug: `${Date.now()}`,
-    published: true,
-    authorId: user.id,
-  });
+  await ensureUserExists(user);
+
   console.log("✨ createArticle called:", data);
-  return { success: true, message: "Article create logged (stub)" };
+
+  // Try to generate summary, but continue without it if it fails (e.g., in tests)
+  let summary: string | undefined;
+  try {
+    summary = await summarizeArticle(data.title || "", data.content || "");
+  } catch (error) {
+    console.warn("⚠️ Failed to generate AI summary:", error);
+    summary = undefined;
+  }
+
+  const response = await db
+    .insert(articles)
+    .values({
+      title: data.title,
+      content: data.content,
+      slug: `${Date.now()}`,
+      published: true,
+      authorId: user.id,
+      imageUrl: data.imageUrl ?? undefined,
+      summary,
+    })
+    .returning({ id: articles.id });
+
+  redis.del("articles:all");
+  const articleId = response[0]?.id;
+  return { success: true, message: "Article create logged", id: articleId };
 }
 
 export async function updateArticle(id: string, data: UpdateArticleInput) {
@@ -50,16 +70,28 @@ export async function updateArticle(id: string, data: UpdateArticleInput) {
     throw new Error("❌ Forbidden");
   }
 
-  await db
+  console.log("📝 updateArticle called:", { id, ...data });
+
+  // Try to generate summary, but continue without it if it fails (e.g., in tests)
+  let summary: string | undefined;
+  try {
+    summary = await summarizeArticle(data.title || "", data.content || "");
+  } catch (error) {
+    console.warn("⚠️ Failed to generate AI summary:", error);
+    summary = undefined;
+  }
+
+  const _response = await db
     .update(articles)
     .set({
       title: data.title,
       content: data.content,
+      imageUrl: data.imageUrl ?? undefined,
+      summary: summary ?? undefined,
     })
     .where(eq(articles.id, +id));
 
-  console.log("📝 updateArticle called:", { id, ...data });
-  return { success: true, message: `Article ${id} update logged (stub)` };
+  return { success: true, message: `Article ${id} update logged` };
 }
 
 export async function deleteArticle(id: string) {
@@ -72,9 +104,10 @@ export async function deleteArticle(id: string) {
     throw new Error("❌ Forbidden");
   }
 
-  await db.delete(articles).where(eq(articles.id, +id));
-
   console.log("🗑️ deleteArticle called:", id);
+
+  const _response = await db.delete(articles).where(eq(articles.id, +id));
+
   return { success: true, message: `Article ${id} delete logged (stub)` };
 }
 

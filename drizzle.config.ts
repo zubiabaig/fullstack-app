@@ -2,10 +2,7 @@ import "dotenv/config";
 import assert from "node:assert";
 import { defineConfig } from "drizzle-kit";
 
-assert(
-  process.env.DATABASE_URL,
-  "you need a DATABASE_URL env var set to run the migrations",
-);
+assert(process.env.DATABASE_URL, "DATABASE_URL must be defined");
 
 export default defineConfig({
   out: "./drizzle",
